@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "423145728448",
+    "project_id": "beattreat-d87eb",
+    "storage_bucket": "beattreat-d87eb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:423145728448:android:cd12d73b8e263bdecbc025",
+        "android_client_info": {
+          "package_name": "com.example.beattreat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAd0bc0CeyA9HXKI31Dosd8MK1HLa73bSM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

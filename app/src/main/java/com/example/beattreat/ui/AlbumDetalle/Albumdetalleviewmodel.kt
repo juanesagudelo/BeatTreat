@@ -1,0 +1,166 @@
+package com.example.beattreat.ui.AlbumDetalle
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.beattreat.data.repository.FirestoreAlbumRepository
+import com.example.beattreat.data.repository.FirestoreReviewRepository
+import com.example.beattreat.data.repository.FirestoreUserRepository
+import com.google.firebase.auth.FirebaseAuth
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import kotlin.math.round
+
+@HiltViewModel
+class AlbumDetalleViewModel @Inject constructor(
+    private val firestoreAlbumRepository: FirestoreAlbumRepository,
+    private val firestoreReviewRepository: FirestoreReviewRepository,
+    private val firestoreUserRepository: FirestoreUserRepository,
+    private val firebaseAuth: FirebaseAuth
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(AlbumDetalleUIState())
+    val uiState: StateFlow<AlbumDetalleUIState> = _uiState.asStateFlow()
+
+    private var firestoreAlbumId: String = ""
+
+    fun cargarAlbum(albumId: Int) {
+        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        viewModelScope.launch {
+            val rawResult = firestoreAlbumRepository.getAllAlbumsRaw()
+            if (rawResult.isSuccess) {
+                val albumsMap = rawResult.getOrDefault(emptyMap())
+                val entry = albumsMap.entries.find { it.key.hashCode() == albumId }
+                if (entry != null) {
+                    firestoreAlbumId = entry.key
+                    val dto = entry.value
+                    val album = AlbumDetalleUI(
+                        id                   = albumId,
+                        nombre               = dto.title,
+                        artista              = dto.artist,
+                        año                  = dto.releaseYear.toString(),
+                        genero               = dto.genre,
+                        descripcion          = dto.description,
+                        imagenUrl            = dto.coverImage,
+                        duracionTotal        = "—",
+                        calificacionPromedio = 0f,
+                        totalResenas         = 0,
+                        canciones            = emptyList()
+                    )
+                    // Verificar si ya es favorito
+                    val esFavorito = firestoreUserRepository.isFavorite(entry.key).getOrNull() ?: false
+                    _uiState.update {
+                        it.copy(
+                            album           = album,
+                            isLoading       = false,
+                            firestoreAlbumId = firestoreAlbumId,
+                            esFavorito      = esFavorito
+                        )
+                    }
+                    cargarResenas(entry.key)
+                } else {
+                    _uiState.update { it.copy(isLoading = false, errorMessage = "Álbum no encontrado") }
+                }
+            } else {
+                _uiState.update { it.copy(isLoading = false, errorMessage = rawResult.exceptionOrNull()?.message) }
+            }
+        }
+    }
+
+    private fun cargarResenas(firestoreId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(resenasLoading = true) }
+            val result = firestoreReviewRepository.getReviewsByAlbum(firestoreId)
+            if (result.isSuccess) {
+                val resenasCrudas = result.getOrDefault(emptyList())
+                val resenasEnriquecidas = resenasCrudas.map { resena ->
+                    if (resena.autorFotoUrl.isBlank() && resena.autorFirestoreUserId.isNotBlank()) {
+                        val fotoActual = firestoreUserRepository
+                            .getUserById(resena.autorFirestoreUserId)
+                            .getOrNull()?.profileImage ?: ""
+                        resena.copy(autorFotoUrl = fotoActual)
+                    } else resena
+                }
+                _uiState.update { state ->
+                    val albumActualizado = state.album
+                        ?.takeIf { resenasEnriquecidas.isNotEmpty() }
+                        ?.copy(
+                            calificacionPromedio = calcularPromedio(resenasEnriquecidas.map { it.calificacion }),
+                            totalResenas         = resenasEnriquecidas.size
+                        ) ?: state.album
+                    state.copy(resenas = resenasEnriquecidas, resenasLoading = false, album = albumActualizado)
+                }
+            } else {
+                _uiState.update { it.copy(resenasLoading = false, resenasError = result.exceptionOrNull()?.message) }
+            }
+        }
+    }
+
+    fun recargarResenas() {
+        if (firestoreAlbumId.isNotBlank()) cargarResenas(firestoreAlbumId)
+    }
+
+    fun eliminarResena(firestoreDocId: String) {
+        viewModelScope.launch {
+            firestoreReviewRepository.deleteReview(firestoreDocId)
+            recargarResenas()
+        }
+    }
+
+    fun abrirEditar(resena: com.example.beattreat.ui.Resena.ResenaDetalladaUI) {
+        _uiState.update { it.copy(resenaEditando = resena, editRating = resena.calificacion, editContent = resena.texto, mostrarDialogoEditar = true) }
+    }
+
+    fun cerrarEditar() {
+        _uiState.update { it.copy(mostrarDialogoEditar = false, resenaEditando = null) }
+    }
+
+    fun onEditRatingChange(v: Float) { _uiState.update { it.copy(editRating = v) } }
+    fun onEditContentChange(v: String) { _uiState.update { it.copy(editContent = v) } }
+
+    fun guardarEdicion() {
+        val state  = _uiState.value
+        val resena = state.resenaEditando ?: return
+        if (state.editContent.isBlank() || state.editRating == 0f) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(editGuardando = true) }
+            firestoreReviewRepository.updateReview(resena.firestoreDocId, state.editRating, state.editContent.trim())
+                .onSuccess {
+                    _uiState.update { it.copy(mostrarDialogoEditar = false, resenaEditando = null, editGuardando = false) }
+                    recargarResenas()
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(editGuardando = false, resenasError = e.message) }
+                }
+        }
+    }
+
+    fun toggleFavorito() {
+        val album = _uiState.value.album ?: return
+        val esFavorito = _uiState.value.esFavorito
+        viewModelScope.launch {
+            _uiState.update { it.copy(esFavorito = !esFavorito) }
+            if (esFavorito) {
+                firestoreUserRepository.removeFavorite(firestoreAlbumId)
+            } else {
+                firestoreUserRepository.addFavorite(
+                    albumFirestoreId = firestoreAlbumId,
+                    title            = album.nombre,
+                    artist           = album.artista,
+                    coverImage       = album.imagenUrl
+                )
+            }
+        }
+    }
+
+    fun getCurrentUserId(): String = firebaseAuth.currentUser?.uid ?: ""
+
+    private fun calcularPromedio(calificaciones: List<Float>): Float {
+        if (calificaciones.isEmpty()) return 0f
+        return (round(calificaciones.average() * 10) / 10).toFloat()
+    }
+}
