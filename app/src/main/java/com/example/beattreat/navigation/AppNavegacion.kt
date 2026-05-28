@@ -475,6 +475,7 @@ fun AppNavegacion(
             val viewModel: MapaResenasViewModel = hiltViewModel()
             MapaResenasScreen(
                 viewModel     = viewModel,
+                onBackClick   = { navController.popBackStack() },
                 onResenaClick = { resenaId, albumId ->
                     navController.navigate(Screen.Comentarios.createRoute(resenaId, albumId))
                 },
